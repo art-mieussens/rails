@@ -1,4 +1,4 @@
-import ActionCable from "../../../../app/javascript/action_cable/index"
+import * as ActionCable from "../../../../app/javascript/action_cable/index"
 import {testURL} from "../test_helpers/index"
 
 const {module, test} = QUnit
@@ -6,24 +6,14 @@ const {module, test} = QUnit
 module("ActionCable", () => {
   module("Adapters", () => {
     module("WebSocket", () => {
-      test("default is window.WebSocket", assert => {
-        assert.equal(ActionCable.WebSocket, window.WebSocket)
-      })
-
-      test("configurable", assert => {
-        ActionCable.WebSocket = ""
-        assert.equal(ActionCable.WebSocket, "")
+      test("default is self.WebSocket", assert => {
+        assert.equal(ActionCable.adapters.WebSocket, self.WebSocket)
       })
     })
 
     module("logger", () => {
-      test("default is window.console", assert => {
-        assert.equal(ActionCable.logger, window.console)
-      })
-
-      test("configurable", assert => {
-        ActionCable.logger = ""
-        assert.equal(ActionCable.logger, "")
+      test("default is self.console", assert => {
+        assert.equal(ActionCable.adapters.logger, self.console)
       })
     })
   })
@@ -49,6 +39,14 @@ module("ActionCable", () => {
       const consumer = ActionCable.createConsumer()
       document.head.removeChild(element)
 
+      assert.equal(consumer.url, testURL)
+    })
+
+    test("uses function to generate URL", assert => {
+      const generateURL = () => {
+        return testURL
+      }
+      const consumer = ActionCable.createConsumer(generateURL)
       assert.equal(consumer.url, testURL)
     })
   })

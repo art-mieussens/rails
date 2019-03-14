@@ -196,6 +196,17 @@ module ActiveRecord
         true
       end
 
+      def supports_insert_returning?
+        true
+      end
+
+      def supports_insert_on_conflict?
+        postgresql_version >= 90500
+      end
+      alias supports_insert_on_duplicate_skip? supports_insert_on_conflict?
+      alias supports_insert_on_duplicate_update? supports_insert_on_conflict?
+      alias supports_insert_conflict_target? supports_insert_on_conflict?
+
       def index_algorithms
         { concurrently: "CONCURRENTLY" }
       end
@@ -240,22 +251,12 @@ module ActiveRecord
 
         configure_connection
         add_pg_encoders
-        @statements = StatementPool.new @connection,
-                                        self.class.type_cast_config_to_integer(config[:statement_limit])
-
         add_pg_decoders
 
         @type_map = Type::HashLookupTypeMap.new
         initialize_type_map
         @local_tz = execute("SHOW TIME ZONE", "SCHEMA").first["TimeZone"]
         @use_insert_returning = @config.key?(:insert_returning) ? self.class.type_cast_config_to_boolean(@config[:insert_returning]) : true
-      end
-
-      # Clears the prepared statements cache.
-      def clear_cache!
-        @lock.synchronize do
-          @statements.clear
-        end
       end
 
       def truncate(table_name, name = nil)
@@ -278,6 +279,8 @@ module ActiveRecord
           super
           @connection.reset
           configure_connection
+        rescue PG::ConnectionBad
+          connect
         end
       end
 
@@ -421,6 +424,20 @@ module ActiveRecord
 
       def default_index_type?(index) # :nodoc:
         index.using == :btree || super
+      end
+
+      def build_insert_sql(insert) # :nodoc:
+        sql = +"INSERT #{insert.into} #{insert.values_list}"
+
+        if insert.skip_duplicates?
+          sql << " ON CONFLICT #{insert.conflict_target} DO NOTHING"
+        elsif insert.update_duplicates?
+          sql << " ON CONFLICT #{insert.conflict_target} DO UPDATE SET "
+          sql << insert.updatable_columns.map { |column| "#{column}=excluded.#{column}" }.join(",")
+        end
+
+        sql << " RETURNING #{insert.returning}" if insert.returning
+        sql
       end
 
       private
@@ -609,6 +626,10 @@ module ActiveRecord
         FEATURE_NOT_SUPPORTED = "0A000" #:nodoc:
 
         def execute_and_clear(sql, name, binds, prepare: false)
+          if preventing_writes? && write_query?(sql)
+            raise ActiveRecord::ReadOnlyError, "Write query attempted while in readonly mode: #{sql}"
+          end
+
           if without_prepared_statement?(binds)
             result = exec_no_cache(sql, name, [])
           elsif !prepare
@@ -624,6 +645,10 @@ module ActiveRecord
         def exec_no_cache(sql, name, binds)
           materialize_transactions
 
+          # make sure we carry over any changes to ActiveRecord::Base.default_timezone that have been
+          # made since we established the connection
+          update_typemap_for_default_timezone
+
           type_casted_binds = type_casted_binds(binds)
           log(sql, name, binds, type_casted_binds) do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
@@ -634,6 +659,7 @@ module ActiveRecord
 
         def exec_cache(sql, name, binds)
           materialize_transactions
+          update_typemap_for_default_timezone
 
           stmt_key = prepare_statement(sql, binds)
           type_casted_binds = type_casted_binds(binds)
@@ -712,6 +738,8 @@ module ActiveRecord
         def connect
           @connection = PG.connect(@connection_parameters)
           configure_connection
+          add_pg_encoders
+          add_pg_decoders
         end
 
         # Configures the encoding, verbosity, schema search path, and time zone of the connection.
@@ -792,6 +820,10 @@ module ActiveRecord
           Arel::Visitors::PostgreSQL.new(self)
         end
 
+        def build_statement_pool
+          StatementPool.new(@connection, self.class.type_cast_config_to_integer(@config[:statement_limit]))
+        end
+
         def can_perform_case_insensitive_comparison_for?(column)
           @case_insensitive_cache ||= {}
           @case_insensitive_cache[column.sql_type] ||= begin
@@ -822,7 +854,22 @@ module ActiveRecord
           @connection.type_map_for_queries = map
         end
 
+        def update_typemap_for_default_timezone
+          if @default_timezone != ActiveRecord::Base.default_timezone && @timestamp_decoder
+            decoder_class = ActiveRecord::Base.default_timezone == :utc ?
+              PG::TextDecoder::TimestampUtc :
+              PG::TextDecoder::TimestampWithoutTimeZone
+
+            @timestamp_decoder = decoder_class.new(@timestamp_decoder.to_h)
+            @connection.type_map_for_results.add_coder(@timestamp_decoder)
+            @default_timezone = ActiveRecord::Base.default_timezone
+          end
+        end
+
         def add_pg_decoders
+          @default_timezone = nil
+          @timestamp_decoder = nil
+
           coders_by_name = {
             "int2" => PG::TextDecoder::Integer,
             "int4" => PG::TextDecoder::Integer,
@@ -832,6 +879,13 @@ module ActiveRecord
             "float8" => PG::TextDecoder::Float,
             "bool" => PG::TextDecoder::Boolean,
           }
+
+          if defined?(PG::TextDecoder::TimestampUtc)
+            # Use native PG encoders available since pg-1.1
+            coders_by_name["timestamp"] = PG::TextDecoder::TimestampUtc
+            coders_by_name["timestamptz"] = PG::TextDecoder::TimestampWithTimeZone
+          end
+
           known_coder_types = coders_by_name.keys.map { |n| quote(n) }
           query = <<~SQL % known_coder_types.join(", ")
             SELECT t.oid, t.typname
@@ -847,6 +901,10 @@ module ActiveRecord
           map = PG::TypeMapByOid.new
           coders.each { |coder| map.add_coder(coder) }
           @connection.type_map_for_results = map
+
+          # extract timestamp decoder for use in update_typemap_for_default_timezone
+          @timestamp_decoder = coders.find { |coder| coder.name == "timestamp" }
+          update_typemap_for_default_timezone
         end
 
         def construct_coder(row, coder_class)

@@ -303,8 +303,26 @@ class ActionsTest < Rails::Generators::TestCase
   end
 
   def test_generate_should_run_script_generate_with_argument_and_options
-    assert_called_with(generator, :run_ruby_script, ["bin/rails generate model MyModel", verbose: false]) do
-      action :generate, "model", "MyModel"
+    run_generator
+    action :generate, "model", "MyModel"
+    assert_file "app/models/my_model.rb", /MyModel/
+  end
+
+  def test_generate_aborts_when_subprocess_fails_if_requested
+    run_generator
+    content = capture(:stderr) do
+      assert_raises SystemExit do
+        action :generate, "model", "MyModel:ADsad", abort_on_failure: true
+        action :generate, "model", "MyModel"
+      end
+    end
+    assert_match(/wrong constant name MyModel:aDsad/, content)
+    assert_no_file "app/models/my_model.rb"
+  end
+
+  def test_generate_should_run_command_without_env
+    assert_called_with(generator, :run, ["rails generate model MyModel name:string", verbose: false]) do
+      action :generate, "model", "MyModel", "name:string"
     end
   end
 
@@ -398,15 +416,6 @@ class ActionsTest < Rails::Generators::TestCase
         action :rails_command, "log:clear", capture: true
       end
     end
-  end
-
-  def test_capify_should_run_the_capify_command
-    content = capture(:stderr) do
-      assert_called_with(generator, :run, ["capify .", verbose: false]) do
-        action :capify!
-      end
-    end
-    assert_match(/DEPRECATION WARNING: `capify!` is deprecated/, content)
   end
 
   def test_route_should_add_data_to_the_routes_block_in_config_routes

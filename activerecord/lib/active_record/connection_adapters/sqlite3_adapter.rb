@@ -9,7 +9,7 @@ require "active_record/connection_adapters/sqlite3/schema_definitions"
 require "active_record/connection_adapters/sqlite3/schema_dumper"
 require "active_record/connection_adapters/sqlite3/schema_statements"
 
-gem "sqlite3", "~> 1.3.6"
+gem "sqlite3", "~> 1.3", ">= 1.3.6"
 require "sqlite3"
 
 module ActiveRecord
@@ -35,8 +35,6 @@ module ActiveRecord
         config[:database].to_s,
         config.merge(results_as_hash: true)
       )
-
-      db.busy_timeout(ConnectionAdapters::SQLite3Adapter.type_cast_config_to_integer(config[:timeout])) if config[:timeout]
 
       ConnectionAdapters::SQLite3Adapter.new(db, logger, nil, config)
     rescue Errno::ENOENT => error
@@ -76,22 +74,15 @@ module ActiveRecord
         json:         { name: "json" },
       }
 
-      ##
-      # :singleton-method:
-      # Indicates whether boolean values are stored in sqlite3 databases as 1
-      # and 0 or 't' and 'f'. Leaving <tt>ActiveRecord::ConnectionAdapters::SQLite3Adapter.represent_boolean_as_integer</tt>
-      # set to false is deprecated. SQLite databases have used 't' and 'f' to
-      # serialize boolean values and must have old data converted to 1 and 0
-      # (its native boolean serialization) before setting this flag to true.
-      # Conversion can be accomplished by setting up a rake task which runs
-      #
-      #   ExampleModel.where("boolean_column = 't'").update_all(boolean_column: 1)
-      #   ExampleModel.where("boolean_column = 'f'").update_all(boolean_column: 0)
-      # for all models and all boolean columns, after which the flag must be set
-      # to true by adding the following to your <tt>application.rb</tt> file:
-      #
-      #   Rails.application.config.active_record.sqlite3.represent_boolean_as_integer = true
-      class_attribute :represent_boolean_as_integer, default: false
+      def self.represent_boolean_as_integer=(value) # :nodoc:
+        if value == false
+          raise "`.represent_boolean_as_integer=` is now always true, so make sure your application can work with it and remove this settings."
+        end
+
+        ActiveSupport::Deprecation.warn(
+          "`.represent_boolean_as_integer=` is now always true, so setting this is deprecated and will be removed in Rails 6.1."
+        )
+      end
 
       class StatementPool < ConnectionAdapters::StatementPool # :nodoc:
         private
@@ -102,9 +93,6 @@ module ActiveRecord
 
       def initialize(connection, logger, connection_options, config)
         super(connection, logger, config)
-
-        @active     = true
-        @statements = StatementPool.new(self.class.type_cast_config_to_integer(config[:statement_limit]))
         configure_connection
       end
 
@@ -128,7 +116,7 @@ module ActiveRecord
         true
       end
 
-      def supports_foreign_keys_in_create?
+      def supports_foreign_keys?
         true
       end
 
@@ -144,21 +132,31 @@ module ActiveRecord
         true
       end
 
+      def supports_insert_on_conflict?
+        sqlite_version >= "3.24.0"
+      end
+      alias supports_insert_on_duplicate_skip? supports_insert_on_conflict?
+      alias supports_insert_on_duplicate_update? supports_insert_on_conflict?
+      alias supports_insert_conflict_target? supports_insert_on_conflict?
+
       def active?
-        @active
+        !@connection.closed?
+      end
+
+      def reconnect!
+        super
+        connect if @connection.closed?
       end
 
       # Disconnects from the database if already connected. Otherwise, this
       # method does nothing.
       def disconnect!
         super
-        @active = false
         @connection.close rescue nil
       end
 
-      # Clears the prepared statements cache.
-      def clear_cache!
-        @statements.clear
+      def truncate(table_name, name = nil)
+        execute "DELETE FROM #{quote_table_name(table_name)}", name
       end
 
       def supports_index_sort_order?
@@ -209,12 +207,23 @@ module ActiveRecord
       # DATABASE STATEMENTS ======================================
       #++
 
+      READ_QUERY = ActiveRecord::ConnectionAdapters::AbstractAdapter.build_read_query_regexp(:begin, :commit, :explain, :select, :pragma, :release, :savepoint, :rollback) # :nodoc:
+      private_constant :READ_QUERY
+
+      def write_query?(sql) # :nodoc:
+        !READ_QUERY.match?(sql)
+      end
+
       def explain(arel, binds = [])
         sql = "EXPLAIN QUERY PLAN #{to_sql(arel, binds)}"
         SQLite3::ExplainPrettyPrinter.new.pp(exec_query(sql, "EXPLAIN", []))
       end
 
       def exec_query(sql, name = nil, binds = [], prepare: false)
+        if preventing_writes? && write_query?(sql)
+          raise ActiveRecord::ReadOnlyError, "Write query attempted while in readonly mode: #{sql}"
+        end
+
         materialize_transactions
 
         type_casted_binds = type_casted_binds(binds)
@@ -257,6 +266,10 @@ module ActiveRecord
       end
 
       def execute(sql, name = nil) #:nodoc:
+        if preventing_writes? && write_query?(sql)
+          raise ActiveRecord::ReadOnlyError, "Write query attempted while in readonly mode: #{sql}"
+        end
+
         materialize_transactions
 
         log(sql, name) do
@@ -299,11 +312,6 @@ module ActiveRecord
         rename_table_indexes(table_name, new_name)
       end
 
-      def valid_alter_table_type?(type, options = {})
-        !invalid_alter_table_type?(type, options)
-      end
-      deprecate :valid_alter_table_type?
-
       def add_column(table_name, column_name, type, options = {}) #:nodoc:
         if invalid_alter_table_type?(type, options)
           alter_table(table_name) do |definition|
@@ -317,6 +325,9 @@ module ActiveRecord
       def remove_column(table_name, column_name, type = nil, options = {}) #:nodoc:
         alter_table(table_name) do |definition|
           definition.remove_column column_name
+          definition.foreign_keys.delete_if do |_, fk_options|
+            fk_options[:column] == column_name.to_s
+          end
         end
       end
 
@@ -375,14 +386,6 @@ module ActiveRecord
         end
       end
 
-      def insert_fixtures(rows, table_name)
-        ActiveSupport::Deprecation.warn(<<-MSG.squish)
-          `insert_fixtures` is deprecated and will be removed in the next version of Rails.
-          Consider using `insert_fixtures_set` for performance improvement.
-        MSG
-        insert_fixtures_set(table_name => rows)
-      end
-
       def insert_fixtures_set(fixture_set, tables_to_delete = [])
         disable_referential_integrity do
           transaction(requires_new: true) do
@@ -393,6 +396,19 @@ module ActiveRecord
             end
           end
         end
+      end
+
+      def build_insert_sql(insert) # :nodoc:
+        sql = +"INSERT #{insert.into} #{insert.values_list}"
+
+        if insert.skip_duplicates?
+          sql << " ON CONFLICT #{insert.conflict_target} DO NOTHING"
+        elsif insert.update_duplicates?
+          sql << " ON CONFLICT #{insert.conflict_target} DO UPDATE SET "
+          sql << insert.updatable_columns.map { |column| "#{column}=excluded.#{column}" }.join(",")
+        end
+
+        sql
       end
 
       private
@@ -426,9 +442,8 @@ module ActiveRecord
           type.to_sym == :primary_key || options[:primary_key]
         end
 
-        def alter_table(table_name, options = {})
+        def alter_table(table_name, foreign_keys = foreign_keys(table_name), **options)
           altered_table_name = "a#{table_name}"
-          foreign_keys = foreign_keys(table_name)
 
           caller = lambda do |definition|
             rename = options[:rename] || {}
@@ -436,7 +451,8 @@ module ActiveRecord
               if column = rename[fk.options[:column]]
                 fk.options[:column] = column
               end
-              definition.foreign_key(fk.to_table, fk.options)
+              to_table = strip_table_name_prefix_and_suffix(fk.to_table)
+              definition.foreign_key(to_table, fk.options)
             end
 
             yield definition if block_given?
@@ -591,7 +607,21 @@ module ActiveRecord
           Arel::Visitors::SQLite.new(self)
         end
 
+        def build_statement_pool
+          StatementPool.new(self.class.type_cast_config_to_integer(@config[:statement_limit]))
+        end
+
+        def connect
+          @connection = ::SQLite3::Database.new(
+            @config[:database].to_s,
+            @config.merge(results_as_hash: true)
+          )
+          configure_connection
+        end
+
         def configure_connection
+          @connection.busy_timeout(self.class.type_cast_config_to_integer(@config[:timeout])) if @config[:timeout]
+
           execute("PRAGMA foreign_keys = ON", "SCHEMA")
         end
 

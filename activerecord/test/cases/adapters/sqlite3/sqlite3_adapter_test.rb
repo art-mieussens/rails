@@ -536,10 +536,6 @@ module ActiveRecord
         end
       end
 
-      def test_deprecate_valid_alter_table_type
-        assert_deprecated { @conn.valid_alter_table_type?(:string) }
-      end
-
       def test_db_is_not_readonly_when_readonly_option_is_false
         conn = Base.sqlite3_connection database: ":memory:",
                                        adapter: "sqlite3",
@@ -570,6 +566,72 @@ module ActiveRecord
 
         assert_raises(ActiveRecord::StatementInvalid, /SQLite3::ReadOnlyException/) do
           conn.execute("CREATE TABLE test(id integer)")
+        end
+      end
+
+      def test_errors_when_an_insert_query_is_called_while_preventing_writes
+        with_example_table "id int, data string" do
+          assert_raises(ActiveRecord::ReadOnlyError) do
+            @conn.while_preventing_writes do
+              @conn.execute("INSERT INTO ex (data) VALUES ('138853948594')")
+            end
+          end
+        end
+      end
+
+      def test_errors_when_an_update_query_is_called_while_preventing_writes
+        with_example_table "id int, data string" do
+          @conn.execute("INSERT INTO ex (data) VALUES ('138853948594')")
+
+          assert_raises(ActiveRecord::ReadOnlyError) do
+            @conn.while_preventing_writes do
+              @conn.execute("UPDATE ex SET data = '9989' WHERE data = '138853948594'")
+            end
+          end
+        end
+      end
+
+      def test_errors_when_a_delete_query_is_called_while_preventing_writes
+        with_example_table "id int, data string" do
+          @conn.execute("INSERT INTO ex (data) VALUES ('138853948594')")
+
+          assert_raises(ActiveRecord::ReadOnlyError) do
+            @conn.while_preventing_writes do
+              @conn.execute("DELETE FROM ex where data = '138853948594'")
+            end
+          end
+        end
+      end
+
+      def test_errors_when_a_replace_query_is_called_while_preventing_writes
+        with_example_table "id int, data string" do
+          @conn.execute("INSERT INTO ex (data) VALUES ('138853948594')")
+
+          assert_raises(ActiveRecord::ReadOnlyError) do
+            @conn.while_preventing_writes do
+              @conn.execute("REPLACE INTO ex (data) VALUES ('249823948')")
+            end
+          end
+        end
+      end
+
+      def test_doesnt_error_when_a_select_query_is_called_while_preventing_writes
+        with_example_table "id int, data string" do
+          @conn.execute("INSERT INTO ex (data) VALUES ('138853948594')")
+
+          @conn.while_preventing_writes do
+            assert_equal 1, @conn.execute("SELECT data from ex WHERE data = '138853948594'").count
+          end
+        end
+      end
+
+      def test_doesnt_error_when_a_read_query_with_leading_chars_is_called_while_preventing_writes
+        with_example_table "id int, data string" do
+          @conn.execute("INSERT INTO ex (data) VALUES ('138853948594')")
+
+          @conn.while_preventing_writes do
+            assert_equal 1, @conn.execute("  SELECT data from ex WHERE data = '138853948594'").count
+          end
         end
       end
 

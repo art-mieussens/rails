@@ -44,6 +44,11 @@ class EnumTest < ActiveRecord::TestCase
     assert_equal books(:rfr), authors(:david).unpublished_books.first
   end
 
+  test "find via negative scope" do
+    assert Book.not_published.exclude?(@book)
+    assert Book.not_proposed.include?(@book)
+  end
+
   test "find via where with values" do
     published, written = Book.statuses[:published], Book.statuses[:written]
 
@@ -550,5 +555,14 @@ class EnumTest < ActiveRecord::TestCase
 
   test "data type of Enum type" do
     assert_equal :integer, Book.type_for_attribute("status").type
+  end
+
+  test "scopes can be disabled" do
+    klass = Class.new(ActiveRecord::Base) do
+      self.table_name = "books"
+      enum status: [:proposed, :written], _scopes: false
+    end
+
+    assert_raises(NoMethodError) { klass.proposed }
   end
 end

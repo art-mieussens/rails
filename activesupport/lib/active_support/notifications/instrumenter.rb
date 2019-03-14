@@ -56,8 +56,9 @@ module ActiveSupport
 
       def self.clock_gettime_supported? # :nodoc:
         defined?(Process::CLOCK_PROCESS_CPUTIME_ID) &&
-        !Gem.win_platform?
+          !Gem.win_platform?
       end
+      private_class_method :clock_gettime_supported?
 
       def initialize(name, start, ending, transaction_id, payload)
         @name           = name
@@ -136,7 +137,7 @@ module ActiveSupport
 
       private
         def now
-          Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          Concurrent.monotonic_time
         end
 
         if clock_gettime_supported?

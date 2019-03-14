@@ -1,3 +1,22 @@
+## Rails 6.0.0.beta3 (March 11, 2019) ##
+
+*   No changes.
+
+
+## Rails 6.0.0.beta2 (February 25, 2019) ##
+
+*   No changes.
+
+
+## Rails 6.0.0.beta1 (January 18, 2019) ##
+
+*   Return false instead of the job instance when `enqueue` is aborted.
+
+    This will be the behavior in Rails 6.1 but it can be controlled now with
+    `config.active_job.return_false_on_aborted_enqueue`.
+
+    *Kir Shatrov*
+
 *   Keep executions for each specific declaration
 
     Each `retry_on` declaration has now its own specific executions counter. Before it was
@@ -100,9 +119,9 @@
 
     *Andrew White*
 
-*   Rails 6 requires Ruby 2.4.1 or newer.
+*   Rails 6 requires Ruby 2.5.0 or newer.
 
-    *Jeremy Daer*
+    *Jeremy Daer*, *Kasper Timm Hansen*
 
 *   Add support to define custom argument serializers.
 
