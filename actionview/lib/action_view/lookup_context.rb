@@ -130,9 +130,8 @@ module ActionView
       end
       alias :find_template :find
 
-      def find_file(name, prefixes = [], partial = false, keys = [], options = {})
-        @view_paths.find_file(*args_for_lookup(name, prefixes, partial, keys, options))
-      end
+      alias :find_file :find
+      deprecate :find_file
 
       def find_all(name, prefixes = [], partial = false, keys = [], options = {})
         @view_paths.find_all(*args_for_lookup(name, prefixes, partial, keys, options))
@@ -280,7 +279,15 @@ module ActionView
     # add :html as fallback to :js.
     def formats=(values)
       if values
+        values = values.dup
         values.concat(default_formats) if values.delete "*/*"
+        values.uniq!
+
+        invalid_values = (values - Template::Types.symbols)
+        unless invalid_values.empty?
+          raise ArgumentError, "Invalid formats: #{invalid_values.map(&:inspect).join(", ")}"
+        end
+
         if values == [:js]
           values << :html
           @html_fallback_for_js = true

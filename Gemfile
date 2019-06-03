@@ -29,6 +29,7 @@ gem "uglifier", ">= 1.3.0", require: false
 gem "json", ">= 2.0.0"
 
 gem "rubocop", ">= 0.47", require: false
+gem "rubocop-performance", require: false
 
 group :doc do
   gem "sdoc", "~> 1.0"
@@ -44,7 +45,7 @@ gem "libxml-ruby", platforms: :ruby
 gem "connection_pool", require: false
 
 # for railties app_generator_test
-gem "bootsnap", ">= 1.4.0", require: false
+gem "bootsnap", ">= 1.4.4", require: false
 
 # Active Job
 group :job do
@@ -92,7 +93,7 @@ gem "webmock"
 
 group :ujs do
   gem "qunit-selenium"
-  gem "chromedriver-helper"
+  gem "webdrivers"
 end
 
 # Add your own local bundler stuff.
@@ -102,6 +103,7 @@ instance_eval File.read local_gemfile if File.exist? local_gemfile
 group :test do
   gem "minitest-bisect"
   gem "minitest-retry"
+  gem "minitest-reporters"
 
   platforms :mri do
     gem "stackprof"
@@ -118,7 +120,7 @@ platforms :ruby, :mswin, :mswin64, :mingw, :x64_mingw do
   gem "racc", ">=1.4.6", require: false
 
   # Active Record.
-  gem "sqlite3", "~> 1.3", ">= 1.3.6"
+  gem "sqlite3", "~> 1.4"
 
   group :db do
     gem "pg", ">= 0.18.0"

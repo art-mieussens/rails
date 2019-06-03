@@ -150,6 +150,14 @@ class SafeBufferTest < ActiveSupport::TestCase
     assert_equal "hello&lt;&gt;", clean + @buffer
   end
 
+  test "Should preserve html_safe? status on multiplication" do
+    multiplied_safe_buffer = "<br />".html_safe * 2
+    assert_predicate multiplied_safe_buffer, :html_safe?
+
+    multiplied_unsafe_buffer = @buffer.gsub("", "<>") * 2
+    assert_not_predicate multiplied_unsafe_buffer, :html_safe?
+  end
+
   test "Should concat as a normal string when safe" do
     clean = "hello".html_safe
     @buffer.gsub!("", "<>")
@@ -247,5 +255,23 @@ class SafeBufferTest < ActiveSupport::TestCase
   test "Should not affect frozen objects when accessing characters" do
     x = "Hello".html_safe
     assert_nil x[/a/, 1]
+  end
+
+  test "Should set back references" do
+    a = "foo123".html_safe
+    a2 = a.sub(/([a-z]+)([0-9]+)/) { $2 + $1 }
+    assert_equal "123foo", a2
+    assert_not_predicate a2, :html_safe?
+    a.sub!(/([a-z]+)([0-9]+)/) { $2 + $1 }
+    assert_equal "123foo", a
+    assert_not_predicate a, :html_safe?
+
+    b = "foo123 bar456".html_safe
+    b2 = b.gsub(/([a-z]+)([0-9]+)/) { $2 + $1 }
+    assert_equal "123foo 456bar", b2
+    assert_not_predicate b2, :html_safe?
+    b.gsub!(/([a-z]+)([0-9]+)/) { $2 + $1 }
+    assert_equal "123foo 456bar", b
+    assert_not_predicate b, :html_safe?
   end
 end

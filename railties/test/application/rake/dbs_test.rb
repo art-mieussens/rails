@@ -40,12 +40,12 @@ module ApplicationTests
         end
       end
 
-      test "db:create and db:drop without database url" do
+      test "db:create and db:drop without database URL" do
         require "#{app_path}/config/environment"
         db_create_and_drop ActiveRecord::Base.configurations[Rails.env]["database"]
       end
 
-      test "db:create and db:drop with database url" do
+      test "db:create and db:drop with database URL" do
         require "#{app_path}/config/environment"
         set_database_url
         db_create_and_drop database_url_db_name
@@ -110,6 +110,39 @@ module ApplicationTests
         app_file "config/database.yml", <<-YAML
           development:
             database: <% if Rails.application.config.database %><%= Rails.application.config.database %><% else %>db/default.sqlite3<% end %>
+            adapter: sqlite3
+        YAML
+
+        app_file "config/environments/development.rb", <<-RUBY
+          Rails.application.configure do
+            config.database = "db/development.sqlite3"
+          end
+        RUBY
+
+        db_create_and_drop("db/development.sqlite3", environment_loaded: false)
+      end
+
+      test "db:create and db:drop dont raise errors when loading YAML with FIXME ERB" do
+        app_file "config/database.yml", <<-YAML
+          development:
+            <%= Rails.application.config.database ? 'database: db/development.sqlite3' : 'database: db/development.sqlite3' %>
+            adapter: sqlite3
+        YAML
+
+        app_file "config/environments/development.rb", <<-RUBY
+          Rails.application.configure do
+            config.database = "db/development.sqlite3"
+          end
+        RUBY
+
+        db_create_and_drop("db/development.sqlite3", environment_loaded: false)
+      end
+
+      test "db:create and db:drop don't raise errors when loading YAML which contains a key's value as an ERB statement" do
+        app_file "config/database.yml", <<-YAML
+          development:
+            database: <%= Rails.application.config.database ? 'db/development.sqlite3' : 'db/development.sqlite3' %>
+            custom_option: <%= ENV['CUSTOM_OPTION'] %>
             adapter: sqlite3
         YAML
 
@@ -551,6 +584,22 @@ module ApplicationTests
             assert_equal(books, ActiveRecord::Base.connection.execute("SELECT * from \"books\""))
             assert_not_predicate Book.where(title: "Rework"), :exists?
           end
+        end
+      end
+
+      test "db:prepare setup the database" do
+        Dir.chdir(app_path) do
+          rails "generate", "model", "book", "title:string"
+          output = rails("db:prepare")
+          assert_match(/CreateBooks: migrated/, output)
+
+          output = rails("db:drop")
+          assert_match(/Dropped database/, output)
+
+          rails "generate", "model", "recipe", "title:string"
+          output = rails("db:prepare")
+          assert_match(/CreateBooks: migrated/, output)
+          assert_match(/CreateRecipes: migrated/, output)
         end
       end
     end

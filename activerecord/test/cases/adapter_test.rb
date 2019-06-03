@@ -452,6 +452,8 @@ module ActiveRecord
   class AdapterTestWithoutTransaction < ActiveRecord::TestCase
     self.use_transactional_tests = false
 
+    fixtures :posts, :authors, :author_addresses
+
     def setup
       @connection = ActiveRecord::Base.connection
     end
@@ -482,6 +484,60 @@ module ActiveRecord
       end
     end
 
+    def test_truncate
+      assert_operator Post.count, :>, 0
+
+      @connection.truncate("posts")
+
+      assert_equal 0, Post.count
+    ensure
+      reset_fixtures("posts")
+    end
+
+    def test_truncate_with_query_cache
+      @connection.enable_query_cache!
+
+      assert_operator Post.count, :>, 0
+
+      @connection.truncate("posts")
+
+      assert_equal 0, Post.count
+    ensure
+      reset_fixtures("posts")
+      @connection.disable_query_cache!
+    end
+
+    def test_truncate_tables
+      assert_operator Post.count, :>, 0
+      assert_operator Author.count, :>, 0
+      assert_operator AuthorAddress.count, :>, 0
+
+      @connection.truncate_tables("author_addresses", "authors", "posts")
+
+      assert_equal 0, Post.count
+      assert_equal 0, Author.count
+      assert_equal 0, AuthorAddress.count
+    ensure
+      reset_fixtures("posts", "authors", "author_addresses")
+    end
+
+    def test_truncate_tables_with_query_cache
+      @connection.enable_query_cache!
+
+      assert_operator Post.count, :>, 0
+      assert_operator Author.count, :>, 0
+      assert_operator AuthorAddress.count, :>, 0
+
+      @connection.truncate_tables("author_addresses", "authors", "posts")
+
+      assert_equal 0, Post.count
+      assert_equal 0, Author.count
+      assert_equal 0, AuthorAddress.count
+    ensure
+      reset_fixtures("posts", "authors", "author_addresses")
+      @connection.disable_query_cache!
+    end
+
     # test resetting sequences in odd tables in PostgreSQL
     if ActiveRecord::Base.connection.respond_to?(:reset_pk_sequence!)
       require "models/movie"
@@ -501,6 +557,16 @@ module ActiveRecord
         assert_nothing_raised { sub.save! }
       end
     end
+
+    private
+
+      def reset_fixtures(*fixture_names)
+        ActiveRecord::FixtureSet.reset_cache
+
+        fixture_names.each do |fixture_name|
+          ActiveRecord::FixtureSet.create_fixtures(FIXTURES_ROOT, fixture_name)
+        end
+      end
   end
 end
 

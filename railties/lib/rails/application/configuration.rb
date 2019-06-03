@@ -18,7 +18,8 @@ module Rails
                     :session_options, :time_zone, :reload_classes_only_on_change,
                     :beginning_of_week, :filter_redirect, :x, :enable_dependency_loading,
                     :read_encrypted_secrets, :log_level, :content_security_policy_report_only,
-                    :content_security_policy_nonce_generator, :require_master_key, :credentials
+                    :content_security_policy_nonce_generator, :require_master_key, :credentials,
+                    :disable_sandbox, :add_autoload_paths_to_load_path
 
       attr_reader :encoding, :api_only, :loaded_config_version, :autoloader
 
@@ -65,6 +66,8 @@ module Rails
         @credentials.content_path                = default_credentials_content_path
         @credentials.key_path                    = default_credentials_key_path
         @autoloader                              = :classic
+        @disable_sandbox                         = false
+        @add_autoload_paths_to_load_path         = true
       end
 
       def load_defaults(target_version)
@@ -140,6 +143,12 @@ module Rails
             active_storage.queues.analysis = :active_storage_analysis
             active_storage.queues.purge    = :active_storage_purge
           end
+
+          if respond_to?(:active_record)
+            active_record.collection_cache_versioning = true
+          end
+        when "6.1"
+          load_defaults "6.0"
         else
           raise "Unknown version #{target_version.to_s.inspect}"
         end

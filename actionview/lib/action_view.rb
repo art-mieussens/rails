@@ -44,7 +44,7 @@ module ActionView
     autoload :Rendering
     autoload :RoutingUrlFor
     autoload :Template
-    autoload :FileTemplate
+    autoload :UnboundTemplate
     autoload :ViewPaths
 
     autoload_under "renderer" do
@@ -81,6 +81,7 @@ module ActionView
     end
   end
 
+  autoload :CacheExpiry
   autoload :TestCase
 
   def self.eager_load!

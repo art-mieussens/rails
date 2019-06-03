@@ -133,8 +133,6 @@ module ActiveRecord
         @advisory_locks_enabled = self.class.type_cast_config_to_boolean(
           config.fetch(:advisory_locks, true)
         )
-
-        check_version
       end
 
       def replica?
@@ -172,8 +170,11 @@ module ActiveRecord
       class Version
         include Comparable
 
-        def initialize(version_string)
+        attr_reader :full_version_string
+
+        def initialize(version_string, full_version_string = nil)
           @version = version_string.split(".").map(&:to_i)
+          @full_version_string = full_version_string
         end
 
         def <=>(version_string)
@@ -384,6 +385,11 @@ module ActiveRecord
         false
       end
 
+      # Does this adapter support optimizer hints?
+      def supports_optimizer_hints?
+        false
+      end
+
       def supports_lazy_transactions?
         false
       end
@@ -570,9 +576,17 @@ module ActiveRecord
         "INSERT #{insert.into} #{insert.values_list}"
       end
 
+      def get_database_version # :nodoc:
+      end
+
+      def database_version # :nodoc:
+        schema_cache.database_version
+      end
+
+      def check_version # :nodoc:
+      end
+
       private
-        def check_version
-        end
 
         def type_map
           @type_map ||= Type::TypeMap.new.tap do |mapping|

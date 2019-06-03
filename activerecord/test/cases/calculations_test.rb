@@ -185,7 +185,7 @@ class CalculationsTest < ActiveRecord::TestCase
   def test_limit_is_kept
     return if current_adapter?(:OracleAdapter)
 
-    queries = assert_sql { Account.limit(1).count }
+    queries = capture_sql { Account.limit(1).count }
     assert_equal 1, queries.length
     assert_match(/LIMIT/, queries.first)
   end
@@ -193,7 +193,7 @@ class CalculationsTest < ActiveRecord::TestCase
   def test_offset_is_kept
     return if current_adapter?(:OracleAdapter)
 
-    queries = assert_sql { Account.offset(1).count }
+    queries = capture_sql { Account.offset(1).count }
     assert_equal 1, queries.length
     assert_match(/OFFSET/, queries.first)
   end
@@ -201,14 +201,14 @@ class CalculationsTest < ActiveRecord::TestCase
   def test_limit_with_offset_is_kept
     return if current_adapter?(:OracleAdapter)
 
-    queries = assert_sql { Account.limit(1).offset(1).count }
+    queries = capture_sql { Account.limit(1).offset(1).count }
     assert_equal 1, queries.length
     assert_match(/LIMIT/, queries.first)
     assert_match(/OFFSET/, queries.first)
   end
 
   def test_no_limit_no_offset
-    queries = assert_sql { Account.count }
+    queries = capture_sql { Account.count }
     assert_equal 1, queries.length
     assert_no_match(/LIMIT/, queries.first)
     assert_no_match(/OFFSET/, queries.first)
@@ -224,21 +224,24 @@ class CalculationsTest < ActiveRecord::TestCase
   end
 
   def test_apply_distinct_in_count
-    queries = assert_sql do
+    queries = capture_sql do
       Account.distinct.count
       Account.group(:firm_id).distinct.count
     end
 
     queries.each do |query|
-      # `table_alias_length` in `column_alias_for` would execute
-      # "SHOW max_identifier_length" statement in PostgreSQL adapter.
-      next if query == "SHOW max_identifier_length"
       assert_match %r{\ASELECT(?! DISTINCT) COUNT\(DISTINCT\b}, query
     end
   end
 
   def test_count_with_eager_loading_and_custom_order
     posts = Post.includes(:comments).order("comments.id")
+    assert_queries(1) { assert_equal 11, posts.count }
+    assert_queries(1) { assert_equal 11, posts.count(:all) }
+  end
+
+  def test_count_with_eager_loading_and_custom_select_and_order
+    posts = Post.includes(:comments).order("comments.id").select(:type)
     assert_queries(1) { assert_equal 11, posts.count }
     assert_queries(1) { assert_equal 11, posts.count(:all) }
   end
@@ -357,6 +360,17 @@ class CalculationsTest < ActiveRecord::TestCase
     assert_equal 60,  c[2]
   end
 
+  def test_should_calculate_grouped_with_longer_field
+    field = "a" * Account.connection.max_identifier_length
+
+    Account.update_all("#{field} = credit_limit")
+
+    c = Account.group(:firm_id).sum(field)
+    assert_equal 50,  c[1]
+    assert_equal 105, c[6]
+    assert_equal 60,  c[2]
+  end
+
   def test_should_calculate_with_invalid_field
     assert_equal 6, Account.calculate(:count, "*")
     assert_equal 6, Account.calculate(:count, :all)
@@ -447,7 +461,7 @@ class CalculationsTest < ActiveRecord::TestCase
 
   def test_should_not_perform_joined_include_by_default
     assert_equal Account.count, Account.includes(:firm).count
-    queries = assert_sql { Account.includes(:firm).count }
+    queries = capture_sql { Account.includes(:firm).count }
     assert_no_match(/join/i, queries.last)
   end
 
@@ -823,7 +837,7 @@ class CalculationsTest < ActiveRecord::TestCase
 
   def test_pluck_columns_with_same_name
     expected = [["The First Topic", "The Second Topic of the day"], ["The Third Topic of the day", "The Fourth Topic of the day"]]
-    actual = Topic.joins(:replies)
+    actual = Topic.joins(:replies).order(:id)
       .pluck("topics.title", "replies_topics.title")
     assert_equal expected, actual
   end
@@ -843,28 +857,25 @@ class CalculationsTest < ActiveRecord::TestCase
   end
 
   def test_pluck_loaded_relation
-    Company.attribute_names # Load schema information so we don't query below
     companies = Company.order(:id).limit(3).load
 
-    assert_no_queries do
+    assert_queries(0) do
       assert_equal ["37signals", "Summit", "Microsoft"], companies.pluck(:name)
     end
   end
 
   def test_pluck_loaded_relation_multiple_columns
-    Company.attribute_names # Load schema information so we don't query below
     companies = Company.order(:id).limit(3).load
 
-    assert_no_queries do
+    assert_queries(0) do
       assert_equal [[1, "37signals"], [2, "Summit"], [3, "Microsoft"]], companies.pluck(:id, :name)
     end
   end
 
   def test_pluck_loaded_relation_sql_fragment
-    Company.attribute_names # Load schema information so we don't query below
     companies = Company.order(:name).limit(3).load
 
-    assert_queries 1 do
+    assert_queries(1) do
       assert_equal ["37signals", "Apex", "Ex Nihilo"], companies.pluck(Arel.sql("DISTINCT name"))
     end
   end

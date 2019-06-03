@@ -51,11 +51,11 @@ class ActiveRecordSchemaTest < ActiveRecord::TestCase
     assert_equal 7, @connection.migration_context.current_version
   end
 
-  def test_schema_define_w_table_name_prefix
-    table_name = ActiveRecord::SchemaMigration.table_name
+  def test_schema_define_with_table_name_prefix
     old_table_name_prefix = ActiveRecord::Base.table_name_prefix
     ActiveRecord::Base.table_name_prefix = "nep_"
-    ActiveRecord::SchemaMigration.table_name = "nep_#{table_name}"
+    ActiveRecord::SchemaMigration.reset_table_name
+    ActiveRecord::InternalMetadata.reset_table_name
     ActiveRecord::Schema.define(version: 7) do
       create_table :fruits do |t|
         t.column :color, :string
@@ -67,7 +67,8 @@ class ActiveRecordSchemaTest < ActiveRecord::TestCase
     assert_equal 7, @connection.migration_context.current_version
   ensure
     ActiveRecord::Base.table_name_prefix = old_table_name_prefix
-    ActiveRecord::SchemaMigration.table_name = table_name
+    ActiveRecord::SchemaMigration.reset_table_name
+    ActiveRecord::InternalMetadata.reset_table_name
   end
 
   def test_schema_raises_an_error_for_invalid_column_type
@@ -159,7 +160,7 @@ class ActiveRecordSchemaTest < ActiveRecord::TestCase
   end
 
   if subsecond_precision_supported?
-    def test_timestamps_sets_presicion_on_create_table
+    def test_timestamps_sets_precision_on_create_table
       ActiveRecord::Schema.define do
         create_table :has_timestamps do |t|
           t.timestamps
@@ -170,7 +171,7 @@ class ActiveRecordSchemaTest < ActiveRecord::TestCase
       assert @connection.column_exists?(:has_timestamps, :updated_at, precision: 6, null: false)
     end
 
-    def test_timestamps_sets_presicion_on_change_table
+    def test_timestamps_sets_precision_on_change_table
       ActiveRecord::Schema.define do
         create_table :has_timestamps
 
@@ -184,7 +185,7 @@ class ActiveRecordSchemaTest < ActiveRecord::TestCase
     end
 
     if ActiveRecord::Base.connection.supports_bulk_alter?
-      def test_timestamps_sets_presicion_on_change_table_with_bulk
+      def test_timestamps_sets_precision_on_change_table_with_bulk
         ActiveRecord::Schema.define do
           create_table :has_timestamps
 
@@ -198,7 +199,7 @@ class ActiveRecordSchemaTest < ActiveRecord::TestCase
       end
     end
 
-    def test_timestamps_sets_presicion_on_add_timestamps
+    def test_timestamps_sets_precision_on_add_timestamps
       ActiveRecord::Schema.define do
         create_table :has_timestamps
         add_timestamps :has_timestamps, default: Time.now

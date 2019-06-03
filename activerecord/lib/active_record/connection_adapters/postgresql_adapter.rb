@@ -201,7 +201,7 @@ module ActiveRecord
       end
 
       def supports_insert_on_conflict?
-        postgresql_version >= 90500
+        database_version >= 90500
       end
       alias supports_insert_on_duplicate_skip? supports_insert_on_conflict?
       alias supports_insert_on_duplicate_update? supports_insert_on_conflict?
@@ -257,10 +257,6 @@ module ActiveRecord
         initialize_type_map
         @local_tz = execute("SHOW TIME ZONE", "SCHEMA").first["TimeZone"]
         @use_insert_returning = @config.key?(:insert_returning) ? self.class.type_cast_config_to_boolean(@config[:insert_returning]) : true
-      end
-
-      def truncate(table_name, name = nil)
-        exec_query "TRUNCATE TABLE #{quote_table_name(table_name)}", name, []
       end
 
       # Is this connection alive and ready for queries?
@@ -348,7 +344,14 @@ module ActiveRecord
       end
 
       def supports_pgcrypto_uuid?
-        postgresql_version >= 90400
+        database_version >= 90400
+      end
+
+      def supports_optimizer_hints?
+        unless defined?(@has_pg_hint_plan)
+          @has_pg_hint_plan = extension_available?("pg_hint_plan")
+        end
+        @has_pg_hint_plan
       end
 
       def supports_lazy_transactions?
@@ -381,9 +384,12 @@ module ActiveRecord
         }
       end
 
+      def extension_available?(name)
+        query_value("SELECT true FROM pg_available_extensions WHERE name = #{quote(name)}", "SCHEMA")
+      end
+
       def extension_enabled?(name)
-        res = exec_query("SELECT EXISTS(SELECT * FROM pg_available_extensions WHERE name = '#{name}' AND installed_version IS NOT NULL) as enabled", "SCHEMA")
-        res.cast_values.first
+        query_value("SELECT installed_version IS NOT NULL FROM pg_available_extensions WHERE name = #{quote(name)}", "SCHEMA")
       end
 
       def extensions
@@ -394,8 +400,6 @@ module ActiveRecord
       def max_identifier_length
         @max_identifier_length ||= query_value("SHOW max_identifier_length", "SCHEMA").to_i
       end
-      alias table_alias_length max_identifier_length
-      alias index_name_length max_identifier_length
 
       # Set the authorized user for this session
       def session_auth=(user)
@@ -418,9 +422,10 @@ module ActiveRecord
       }
 
       # Returns the version of the connected PostgreSQL server.
-      def postgresql_version
+      def get_database_version # :nodoc:
         @connection.server_version
       end
+      alias :postgresql_version :database_version
 
       def default_index_type?(index) # :nodoc:
         index.using == :btree || super
@@ -440,12 +445,13 @@ module ActiveRecord
         sql
       end
 
-      private
-        def check_version
-          if postgresql_version < 90300
-            raise "Your version of PostgreSQL (#{postgresql_version}) is too old. Active Record supports PostgreSQL >= 9.3."
-          end
+      def check_version # :nodoc:
+        if database_version < 90300
+          raise "Your version of PostgreSQL (#{database_version}) is too old. Active Record supports PostgreSQL >= 9.3."
         end
+      end
+
+      private
 
         # See https://www.postgresql.org/docs/current/static/errcodes-appendix.html
         VALUE_LIMIT_VIOLATION = "22001"

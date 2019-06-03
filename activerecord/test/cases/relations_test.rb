@@ -602,6 +602,13 @@ class RelationTest < ActiveRecord::TestCase
     end
   end
 
+  def test_extracted_association
+    relation_authors = assert_queries(2) { Post.all.extract_associated(:author) }
+    root_authors = assert_queries(2) { Post.extract_associated(:author) }
+    assert_equal relation_authors, root_authors
+    assert_equal Post.all.collect(&:author), relation_authors
+  end
+
   def test_find_with_included_associations
     assert_queries(2) do
       posts = Post.includes(:comments).order("posts.id")
@@ -699,7 +706,7 @@ class RelationTest < ActiveRecord::TestCase
   end
 
   def test_to_sql_on_eager_join
-    expected = assert_sql {
+    expected = capture_sql {
       Post.eager_load(:last_comment).order("comments.id DESC").to_a
     }.first
     actual = Post.eager_load(:last_comment).order("comments.id DESC").to_sql
@@ -974,6 +981,12 @@ class RelationTest < ActiveRecord::TestCase
 
   def test_size_with_eager_loading_and_custom_order
     posts = Post.includes(:comments).order("comments.id")
+    assert_queries(1) { assert_equal 11, posts.size }
+    assert_queries(1) { assert_equal 11, posts.load.size }
+  end
+
+  def test_size_with_eager_loading_and_custom_select_and_order
+    posts = Post.includes(:comments).order("comments.id").select(:type)
     assert_queries(1) { assert_equal 11, posts.size }
     assert_queries(1) { assert_equal 11, posts.load.size }
   end

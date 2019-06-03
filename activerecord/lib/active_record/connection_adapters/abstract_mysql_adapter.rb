@@ -55,24 +55,26 @@ module ActiveRecord
         super(connection, logger, config)
       end
 
-      def version #:nodoc:
-        @version ||= Version.new(version_string)
+      def get_database_version #:nodoc:
+        full_version_string = get_full_version
+        version_string = version_string(full_version_string)
+        Version.new(version_string, full_version_string)
       end
 
       def mariadb? # :nodoc:
         /mariadb/i.match?(full_version)
       end
 
-      def supports_bulk_alter? #:nodoc:
+      def supports_bulk_alter?
         true
       end
 
       def supports_index_sort_order?
-        !mariadb? && version >= "8.0.1"
+        !mariadb? && database_version >= "8.0.1"
       end
 
       def supports_expression_index?
-        !mariadb? && version >= "8.0.13"
+        !mariadb? && database_version >= "8.0.13"
       end
 
       def supports_transaction_isolation?
@@ -96,11 +98,16 @@ module ActiveRecord
       end
 
       def supports_datetime_with_precision?
-        mariadb? || version >= "5.6.4"
+        mariadb? || database_version >= "5.6.4"
       end
 
       def supports_virtual_columns?
-        mariadb? || version >= "5.7.5"
+        mariadb? || database_version >= "5.7.5"
+      end
+
+      # See https://dev.mysql.com/doc/refman/8.0/en/optimizer-hints.html for more details.
+      def supports_optimizer_hints?
+        !mariadb? && database_version >= "5.7.7"
       end
 
       def supports_advisory_locks?
@@ -169,15 +176,6 @@ module ActiveRecord
       # DATABASE STATEMENTS ======================================
       #++
 
-      def explain(arel, binds = [])
-        sql     = "EXPLAIN #{to_sql(arel, binds)}"
-        start   = Concurrent.monotonic_time
-        result  = exec_query(sql, "EXPLAIN", binds)
-        elapsed = Concurrent.monotonic_time - start
-
-        MySQL::ExplainPrettyPrinter.new.pp(result, elapsed)
-      end
-
       # Executes the SQL statement in the context of this connection.
       def execute(sql, name = nil)
         materialize_transactions
@@ -197,7 +195,7 @@ module ActiveRecord
       end
 
       def begin_db_transaction
-        execute "BEGIN"
+        execute("BEGIN", "TRANSACTION")
       end
 
       def begin_isolated_db_transaction(isolation)
@@ -206,11 +204,11 @@ module ActiveRecord
       end
 
       def commit_db_transaction #:nodoc:
-        execute "COMMIT"
+        execute("COMMIT", "TRANSACTION")
       end
 
       def exec_rollback_db_transaction #:nodoc:
-        execute "ROLLBACK"
+        execute("ROLLBACK", "TRANSACTION")
       end
 
       def empty_insert_statement_value(primary_key = nil)
@@ -269,10 +267,6 @@ module ActiveRecord
         show_variable "collation_database"
       end
 
-      def truncate(table_name, name = nil)
-        execute "TRUNCATE TABLE #{quote_table_name(table_name)}", name
-      end
-
       def table_comment(table_name) # :nodoc:
         scope = quoted_scope(table_name)
 
@@ -284,22 +278,8 @@ module ActiveRecord
         SQL
       end
 
-      def bulk_change_table(table_name, operations) #:nodoc:
-        sqls = operations.flat_map do |command, args|
-          table, arguments = args.shift, args
-          method = :"#{command}_for_alter"
-
-          if respond_to?(method, true)
-            send(method, table, *arguments)
-          else
-            raise "Unknown method called : #{method}(#{arguments.inspect})"
-          end
-        end.join(", ")
-
-        execute("ALTER TABLE #{quote_table_name(table_name)} #{sqls}")
-      end
-
-      def change_table_comment(table_name, comment) #:nodoc:
+      def change_table_comment(table_name, comment_or_changes) # :nodoc:
+        comment = extract_new_comment_value(comment_or_changes)
         comment = "" if comment.nil?
         execute("ALTER TABLE #{quote_table_name(table_name)} COMMENT #{quote(comment)}")
       end
@@ -355,7 +335,8 @@ module ActiveRecord
         change_column table_name, column_name, nil, null: null
       end
 
-      def change_column_comment(table_name, column_name, comment) #:nodoc:
+      def change_column_comment(table_name, column_name, comment_or_changes) # :nodoc:
+        comment = extract_new_comment_value(comment_or_changes)
         change_column table_name, column_name, nil, comment: comment
       end
 
@@ -511,18 +492,12 @@ module ActiveRecord
         index.using == :btree || super
       end
 
-      def insert_fixtures_set(fixture_set, tables_to_delete = [])
-        with_multi_statements do
-          super { discard_remaining_results }
-        end
-      end
-
       def build_insert_sql(insert) # :nodoc:
         sql = +"INSERT #{insert.into} #{insert.values_list}"
 
         if insert.skip_duplicates?
-          any_column = quote_column_name(insert.model.columns.first.name)
-          sql << " ON DUPLICATE KEY UPDATE #{any_column}=#{any_column}"
+          no_op_column = quote_column_name(insert.keys.first)
+          sql << " ON DUPLICATE KEY UPDATE #{no_op_column}=#{no_op_column}"
         elsif insert.update_duplicates?
           sql << " ON DUPLICATE KEY UPDATE "
           sql << insert.updatable_columns.map { |column| "#{column}=VALUES(#{column})" }.join(",")
@@ -531,39 +506,13 @@ module ActiveRecord
         sql
       end
 
+      def check_version # :nodoc:
+        if database_version < "5.5.8"
+          raise "Your version of MySQL (#{database_version}) is too old. Active Record supports MySQL >= 5.5.8."
+        end
+      end
+
       private
-        def check_version
-          if version < "5.5.8"
-            raise "Your version of MySQL (#{version_string}) is too old. Active Record supports MySQL >= 5.5.8."
-          end
-        end
-
-        def combine_multi_statements(total_sql)
-          total_sql.each_with_object([]) do |sql, total_sql_chunks|
-            previous_packet = total_sql_chunks.last
-            sql << ";\n"
-            if max_allowed_packet_reached?(sql, previous_packet) || total_sql_chunks.empty?
-              total_sql_chunks << sql
-            else
-              previous_packet << sql
-            end
-          end
-        end
-
-        def max_allowed_packet_reached?(current_packet, previous_packet)
-          if current_packet.bytesize > max_allowed_packet
-            raise ActiveRecordError, "Fixtures set is too large #{current_packet.bytesize}. Consider increasing the max_allowed_packet variable."
-          elsif previous_packet.nil?
-            false
-          else
-            (current_packet.bytesize + previous_packet.bytesize) > max_allowed_packet
-          end
-        end
-
-        def max_allowed_packet
-          bytes_margin = 2
-          @max_allowed_packet ||= (show_variable("max_allowed_packet") - bytes_margin)
-        end
 
         def initialize_type_map(m = type_map)
           super
@@ -734,7 +683,7 @@ module ActiveRecord
         end
 
         def supports_rename_index?
-          mariadb? ? false : version >= "5.7.6"
+          mariadb? ? false : database_version >= "5.7.6"
         end
 
         def configure_connection
@@ -832,8 +781,8 @@ module ActiveRecord
           MismatchedForeignKey.new(options)
         end
 
-        def version_string
-          full_version.match(/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)/)[1]
+        def version_string(full_version_string)
+          full_version_string.match(/^(?:5\.5\.5-)?(\d+\.\d+\.\d+)/)[1]
         end
 
         class MysqlString < Type::String # :nodoc:

@@ -4,12 +4,13 @@ require "active_record/connection_adapters/abstract_adapter"
 require "active_record/connection_adapters/statement_pool"
 require "active_record/connection_adapters/sqlite3/explain_pretty_printer"
 require "active_record/connection_adapters/sqlite3/quoting"
+require "active_record/connection_adapters/sqlite3/database_statements"
 require "active_record/connection_adapters/sqlite3/schema_creation"
 require "active_record/connection_adapters/sqlite3/schema_definitions"
 require "active_record/connection_adapters/sqlite3/schema_dumper"
 require "active_record/connection_adapters/sqlite3/schema_statements"
 
-gem "sqlite3", "~> 1.3", ">= 1.3.6"
+gem "sqlite3", "~> 1.4"
 require "sqlite3"
 
 module ActiveRecord
@@ -47,8 +48,8 @@ module ActiveRecord
   end
 
   module ConnectionAdapters #:nodoc:
-    # The SQLite3 adapter works SQLite 3.6.16 or newer
-    # with the sqlite3-ruby drivers (available as gem from https://rubygems.org/gems/sqlite3).
+    # The SQLite3 adapter works with the sqlite3-ruby drivers
+    # (available as gem from https://rubygems.org/gems/sqlite3).
     #
     # Options:
     #
@@ -58,6 +59,7 @@ module ActiveRecord
 
       include SQLite3::Quoting
       include SQLite3::SchemaStatements
+      include SQLite3::DatabaseStatements
 
       NATIVE_DATABASE_TYPES = {
         primary_key:  "integer PRIMARY KEY AUTOINCREMENT NOT NULL",
@@ -109,7 +111,7 @@ module ActiveRecord
       end
 
       def supports_expression_index?
-        sqlite_version >= "3.9.0"
+        database_version >= "3.9.0"
       end
 
       def requires_reloading?
@@ -133,7 +135,7 @@ module ActiveRecord
       end
 
       def supports_insert_on_conflict?
-        sqlite_version >= "3.24.0"
+        database_version >= "3.24.0"
       end
       alias supports_insert_on_duplicate_skip? supports_insert_on_conflict?
       alias supports_insert_on_duplicate_update? supports_insert_on_conflict?
@@ -153,10 +155,6 @@ module ActiveRecord
       def disconnect!
         super
         @connection.close rescue nil
-      end
-
-      def truncate(table_name, name = nil)
-        execute "DELETE FROM #{quote_table_name(table_name)}", name
       end
 
       def supports_index_sort_order?
@@ -201,94 +199,6 @@ module ActiveRecord
           execute("PRAGMA defer_foreign_keys = #{old_defer_foreign_keys}")
           execute("PRAGMA foreign_keys = #{old_foreign_keys}")
         end
-      end
-
-      #--
-      # DATABASE STATEMENTS ======================================
-      #++
-
-      READ_QUERY = ActiveRecord::ConnectionAdapters::AbstractAdapter.build_read_query_regexp(:begin, :commit, :explain, :select, :pragma, :release, :savepoint, :rollback) # :nodoc:
-      private_constant :READ_QUERY
-
-      def write_query?(sql) # :nodoc:
-        !READ_QUERY.match?(sql)
-      end
-
-      def explain(arel, binds = [])
-        sql = "EXPLAIN QUERY PLAN #{to_sql(arel, binds)}"
-        SQLite3::ExplainPrettyPrinter.new.pp(exec_query(sql, "EXPLAIN", []))
-      end
-
-      def exec_query(sql, name = nil, binds = [], prepare: false)
-        if preventing_writes? && write_query?(sql)
-          raise ActiveRecord::ReadOnlyError, "Write query attempted while in readonly mode: #{sql}"
-        end
-
-        materialize_transactions
-
-        type_casted_binds = type_casted_binds(binds)
-
-        log(sql, name, binds, type_casted_binds) do
-          ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-            # Don't cache statements if they are not prepared
-            unless prepare
-              stmt = @connection.prepare(sql)
-              begin
-                cols = stmt.columns
-                unless without_prepared_statement?(binds)
-                  stmt.bind_params(type_casted_binds)
-                end
-                records = stmt.to_a
-              ensure
-                stmt.close
-              end
-            else
-              stmt = @statements[sql] ||= @connection.prepare(sql)
-              cols = stmt.columns
-              stmt.reset!
-              stmt.bind_params(type_casted_binds)
-              records = stmt.to_a
-            end
-
-            ActiveRecord::Result.new(cols, records)
-          end
-        end
-      end
-
-      def exec_delete(sql, name = "SQL", binds = [])
-        exec_query(sql, name, binds)
-        @connection.changes
-      end
-      alias :exec_update :exec_delete
-
-      def last_inserted_id(result)
-        @connection.last_insert_row_id
-      end
-
-      def execute(sql, name = nil) #:nodoc:
-        if preventing_writes? && write_query?(sql)
-          raise ActiveRecord::ReadOnlyError, "Write query attempted while in readonly mode: #{sql}"
-        end
-
-        materialize_transactions
-
-        log(sql, name) do
-          ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
-            @connection.execute(sql)
-          end
-        end
-      end
-
-      def begin_db_transaction #:nodoc:
-        log("begin transaction", nil) { @connection.transaction }
-      end
-
-      def commit_db_transaction #:nodoc:
-        log("commit transaction", nil) { @connection.commit }
-      end
-
-      def exec_rollback_db_transaction #:nodoc:
-        log("rollback transaction", nil) { @connection.rollback }
       end
 
       # SCHEMA STATEMENTS ========================================
@@ -386,18 +296,6 @@ module ActiveRecord
         end
       end
 
-      def insert_fixtures_set(fixture_set, tables_to_delete = [])
-        disable_referential_integrity do
-          transaction(requires_new: true) do
-            tables_to_delete.each { |table| delete "DELETE FROM #{quote_table_name(table)}", "Fixture Delete" }
-
-            fixture_set.each do |table_name, rows|
-              rows.each { |row| insert_fixture(row, table_name) }
-            end
-          end
-        end
-      end
-
       def build_insert_sql(insert) # :nodoc:
         sql = +"INSERT #{insert.into} #{insert.values_list}"
 
@@ -411,17 +309,21 @@ module ActiveRecord
         sql
       end
 
+      def get_database_version # :nodoc:
+        SQLite3Adapter::Version.new(query_value("SELECT sqlite_version(*)"))
+      end
+
+      def check_version # :nodoc:
+        if database_version < "3.8.0"
+          raise "Your version of SQLite (#{database_version}) is too old. Active Record supports SQLite >= 3.8."
+        end
+      end
+
       private
         # See https://www.sqlite.org/limits.html,
         # the default value is 999 when not configured.
         def bind_params_length
           999
-        end
-
-        def check_version
-          if sqlite_version < "3.8.0"
-            raise "Your version of SQLite (#{sqlite_version}) is too old. Active Record supports SQLite >= 3.8."
-          end
         end
 
         def initialize_type_map(m = type_map)
@@ -539,10 +441,6 @@ module ActiveRecord
 
           exec_query("INSERT INTO #{quote_table_name(to)} (#{quoted_columns})
                      SELECT #{quoted_from_columns} FROM #{quote_table_name(from)}")
-        end
-
-        def sqlite_version
-          @sqlite_version ||= SQLite3Adapter::Version.new(query_value("SELECT sqlite_version(*)"))
         end
 
         def translate_exception(exception, message:, sql:, binds:)

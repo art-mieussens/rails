@@ -225,6 +225,8 @@ class CreateProducts < ActiveRecord::Migration[5.0]
     create_table :products do |t|
       t.string :name
       t.string :part_number
+
+      t.timestamps
     end
   end
 end
@@ -465,7 +467,6 @@ number of digits after the decimal point.
 * `default`      Allows to set a default value on the column. Note that if you
 are using a dynamic value (such as a date), the default will only be calculated
 the first time (i.e. on the date the migration is applied).
-* `index`        Adds an index for the column.
 * `comment`      Adds a comment for the column.
 
 Some adapters may support additional options; see the adapter specific API docs
@@ -948,7 +949,7 @@ If `:ruby` is selected, then the schema is stored in `db/schema.rb`. If you look
 at this file you'll find that it looks an awful lot like one very big migration:
 
 ```ruby
-ActiveRecord::Schema.define(version: 20080906171750) do
+ActiveRecord::Schema.define(version: 2008_09_06_171750) do
   create_table "authors", force: true do |t|
     t.string   "name"
     t.datetime "created_at"
